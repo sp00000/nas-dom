@@ -8,7 +8,6 @@ interface UserProfile {
   id: string
   email: string
   display_name: string
-  avatar_url?: string
 }
 
 export default function Profile() {
@@ -53,7 +52,7 @@ export default function Profile() {
       // pridobi profilne podatke
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('id, email, display_name, avatar_url')
+        .select('id, email, display_name')
         .eq('id', authUserId)
         .single()
 

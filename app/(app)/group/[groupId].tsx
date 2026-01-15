@@ -23,7 +23,6 @@ interface Task {
   assignedTo: string
   assignedToId: string
   completed: boolean
-  daysRemaining: number
   recurring: boolean
   originalDaysRemaining: number
   deadline?: string
@@ -55,24 +54,22 @@ export default function GroupDetail() {
     if (!memberId || !groupId) return
     
     // Preberi trenutno vrednost iz baze
-    const { data: currentStats } = await supabase
-      .from('group_member_stats')
+    const { data: currentMember } = await supabase
+      .from('group_members')
       .select('completed_count')
       .eq('group_id', groupId as string)
       .eq('user_id', memberId)
       .single()
     
-    const currentCount = currentStats?.completed_count ?? 0
+    const currentCount = currentMember?.completed_count ?? 0
     const newCount = Math.max(0, currentCount + delta)
     
     // Posodobi v bazi
     await supabase
-      .from('group_member_stats')
-      .upsert({ 
-        group_id: groupId as string,
-        user_id: memberId,
-        completed_count: newCount 
-      }, { onConflict: 'group_id,user_id' })
+      .from('group_members')
+      .update({ completed_count: newCount })
+      .eq('group_id', groupId as string)
+      .eq('user_id', memberId)
     
     // Posodobi lokalno stanje
     setMembers(prev => prev.map(m => m.id === memberId
@@ -85,24 +82,22 @@ export default function GroupDetail() {
     if (!memberId || !groupId) return
     
     // Preberi trenutno vrednost iz baze
-    const { data: currentStats } = await supabase
-      .from('group_member_stats')
+    const { data: currentMember } = await supabase
+      .from('group_members')
       .select('completed_stars')
       .eq('group_id', groupId as string)
       .eq('user_id', memberId)
       .single()
     
-    const currentStars = currentStats?.completed_stars ?? 0
+    const currentStars = currentMember?.completed_stars ?? 0
     const newStars = currentStars + delta
     
     // Posodobi v bazi
     await supabase
-      .from('group_member_stats')
-      .upsert({ 
-        group_id: groupId as string,
-        user_id: memberId,
-        completed_stars: newStars 
-        }, { onConflict: 'group_id,user_id' })
+      .from('group_members')
+      .update({ completed_stars: newStars })
+      .eq('group_id', groupId as string)
+      .eq('user_id', memberId)
     
     // Posodobi lokalno stanje
     setMembers(prev => prev.map(m => m.id === memberId
@@ -115,24 +110,22 @@ export default function GroupDetail() {
     if (!memberId || !groupId) return
     
     // Preberi trenutno vrednost iz baze
-    const { data: currentStats } = await supabase
-      .from('group_member_stats')
+    const { data: currentMember } = await supabase
+      .from('group_members')
       .select('overdue_count')
       .eq('group_id', groupId as string)
       .eq('user_id', memberId)
       .single()
     
-    const currentOverdue = currentStats?.overdue_count ?? 0
+    const currentOverdue = currentMember?.overdue_count ?? 0
     const newOverdue = Math.max(0, currentOverdue + delta)
     
     // Posodobi v bazi
     await supabase
-      .from('group_member_stats')
-      .upsert({ 
-        group_id: groupId as string,
-        user_id: memberId,
-        overdue_count: newOverdue 
-      }, { onConflict: 'group_id,user_id' })
+      .from('group_members')
+      .update({ overdue_count: newOverdue })
+      .eq('group_id', groupId as string)
+      .eq('user_id', memberId)
     
     // Posodobi lokalno stanje
     setMembers(prev => prev.map(m => m.id === memberId
@@ -168,6 +161,19 @@ export default function GroupDetail() {
   const handleOverdueTask = async (task: Task) => {
     // Obravnava neopravljeno opravilo
     try {
+      // VAŽNO: Ponovno preveri v bazi če je opravilo že opravljeno
+      const { data: freshTask } = await supabase
+        .from('tasks')
+        .select('completed, id')
+        .eq('id', task.id)
+        .single()
+      
+      // Če je opravilo medtem postalo opravljeno, ga ne kaznuj
+      if (!freshTask || freshTask.completed) {
+        console.log(`Task ${task.id} is already completed, skipping penalty`)
+        return
+      }
+      
       if (task.recurring) {
         // Ponavljajoče: resetiraj brez brisanja
         const newDeadline = new Date()
@@ -176,7 +182,6 @@ export default function GroupDetail() {
         await supabase
           .from('tasks')
           .update({ 
-            days_remaining: task.originalDaysRemaining, 
             completed: false,
             deadline: newDeadline.toISOString()
           })
@@ -202,102 +207,6 @@ export default function GroupDetail() {
     }
   }
 
-  const checkAndHandleOverdueTasks = async (tasksToCheck: Task[]) => {
-    // Preveri vsa opravila in obravnava neopravljene (potekle roke)
-    const now = new Date()
-    let hadOverdue = false
-
-    for (const task of tasksToCheck) {
-      
-      if (!task.deadline) continue // Preskoči če nima roka
-      if (task.completed) continue // Preskoči že opravljena opravila – ne kaznujemo completed
-      if (processedOverdueTasks.has(task.id)) continue  // Preskoči če smo že obravnavali to opravilo
-
-      const deadline = new Date(task.deadline)
-      if (deadline <= now) {
-        // Opravilo je poteklo in ni opravljeno – obravnavaj ga
-        await handleOverdueTask(task)
-        // Označi kot obravnavano
-        setProcessedOverdueTasks(prev => new Set(prev).add(task.id))
-        hadOverdue = true
-      }
-    }
-    
-    // Če smo našli in obravnavali neopravljena opravila, ponovno naloži
-    if (hadOverdue) {
-      // Ponovno naloži podatke iz baze
-      const { data: updatedData } = await supabase
-        .from('tasks')
-        .select('*')
-        .eq('group_id', groupId)
-      
-      if (updatedData) {
-        // Ponovno mapiramo opravila
-        const assignedToIds = updatedData
-          .filter((t: any) => t.assigned_to)
-          .map((t: any) => t.assigned_to)
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, display_name, email')
-          .in('id', assignedToIds)
-        
-        const idToName: Record<string, string> = {}
-        ;(profiles ?? []).forEach(p => {
-          idToName[p.id] = p.display_name || p.email
-        })
-        
-        const mapped: Task[] = updatedData.map((t: any) => {
-          let hoursRemaining: number | undefined
-          let isOverdue = false
-          let deadline = t.deadline
-          
-          // Če opravilo nima deadline, izračunaj ga
-          if (!deadline && t.created_at) {
-            const createdAt = new Date(t.created_at)
-            const deadlineDate = new Date(createdAt)
-            deadlineDate.setDate(deadlineDate.getDate() + (t.days_remaining || 0))
-            deadline = deadlineDate.toISOString()
-          }
-          
-          if (deadline) {
-            const now = new Date()
-            const deadlineDate = new Date(deadline)
-            const diff = deadlineDate.getTime() - now.getTime()
-            hoursRemaining = Math.max(0, Math.floor(diff / (1000*60*60)))
-            isOverdue = !t.completed && deadlineDate < now
-          }
-          
-          return {
-            id: t.id,
-            name: t.name,
-            difficulty: t.difficulty,
-            createdBy: t.created_by ?? '—',
-            assignedTo: t.assigned_to ? (idToName[t.assigned_to] ?? 'Nedodeljeno') : 'Nedodeljeno',
-            assignedToId: t.assigned_to ?? '',
-            completed: !!t.completed,
-            daysRemaining: t.days_remaining,
-            recurring: !!t.recurring,
-            originalDaysRemaining: t.original_days_remaining,
-            deadline,
-            hoursRemaining,
-            isOverdue,
-          }
-        })
-        
-        // Filtriraj duplikate - ohrani samo prvi task z isto ID-ja
-        const uniqueTasksMap = new Map<string, Task>()
-        mapped.forEach(task => {
-          if (!uniqueTasksMap.has(task.id)) {
-            uniqueTasksMap.set(task.id, task)
-          }
-        })
-        const uniqueTasks = Array.from(uniqueTasksMap.values())
-        
-        setTasks(uniqueTasks)
-      }
-    }
-  }
-
   const loadMembers = async () => {
     if (!groupId) return
     
@@ -315,9 +224,10 @@ export default function GroupDetail() {
     
     setGroupOwnerId(groupData?.owner_id ?? null)
     
+    // Naloži člane s statistikami in profile podatki
     const { data: gm, error } = await supabase
       .from('group_members')
-      .select('user_id')
+      .select('user_id, completed_count, completed_stars, overdue_count')
       .eq('group_id', groupId)
     if (error) {
       console.warn('Failed to load members:', error.message)
@@ -328,29 +238,25 @@ export default function GroupDetail() {
       setMembers([])
       return
     }
+    
+    // Naloži profile podatke
     const { data: profs, error: perr } = await supabase
       .from('profiles')
-      .select('id, email, display_name, avatar_url')
+      .select('id, email, display_name')
       .in('id', ids)
     if (perr) {
       console.warn('Failed to load profiles:', perr.message)
       return
     }
     
-    // Naloži group-specific statistike
-    const { data: stats, error: staterr } = await supabase
-      .from('group_member_stats')
-      .select('user_id, completed_count, completed_stars, overdue_count')
-      .eq('group_id', groupId)
-      .in('user_id', ids)
-    if (staterr) {
-      console.warn('Failed to load group member stats:', staterr.message)
-      return
-    }
-    
+    // Ustvari map za hitre stats
     const statsMap: Record<string, any> = {}
-    ;(stats ?? []).forEach((s: any) => {
-      statsMap[s.user_id] = s
+    ;(gm ?? []).forEach((m: any) => {
+      statsMap[m.user_id] = {
+        completed_count: m.completed_count ?? 0,
+        completed_stars: m.completed_stars ?? 0,
+        overdue_count: m.overdue_count ?? 0,
+      }
     })
     
     const mapped = (profs ?? []).map((p: any) => {
@@ -360,10 +266,10 @@ export default function GroupDetail() {
         name: p.display_name ?? p.email,
         email: p.email,
         avatar: '👤',
-        completedCount: memberStats.completed_count ?? 0,
-        completedStars: memberStats.completed_stars ?? 0,
+        completedCount: memberStats.completed_count,
+        completedStars: memberStats.completed_stars,
         isOwner: p.id === groupData?.owner_id,
-        overdueCount: memberStats.overdue_count ?? 0,
+        overdueCount: memberStats.overdue_count,
       }
     })
     setMembers(mapped)
@@ -387,20 +293,18 @@ export default function GroupDetail() {
     let needsReload = false
     
     for (const t of (data ?? [])) {
-      let deadline = t.deadline
+      // Preskoči že obravnavana opravila
+      if (processedOverdueTasks.has(t.id)) continue
       
-      // če nima roka ga izračunaj
-      if (!deadline && t.created_at) {
-        const createdAt = new Date(t.created_at)
-        const deadlineDate = new Date(createdAt)
-        deadlineDate.setDate(deadlineDate.getDate() + (t.days_remaining || 0))
-        deadline = deadlineDate.toISOString()
-      }
+      // POMEMBNO: Preskoči že opravljena opravila
+      if (t.completed) continue
+      
+      const deadline = t.deadline
         
-        // Preveri je deadline pretečen i opravilo nije završeno
+      // Preveri je deadline pretečen i opravilo nije završeno
       if (deadline && !t.completed) {
         const deadlineDate = new Date(deadline)
-        if (deadlineDate <= now && !processedOverdueTasks.has(t.id)) {
+        if (deadlineDate <= now) {
           // Opravilo je preteklo - obdelaj ga
           const taskData: Task = {
             id: t.id,
@@ -410,7 +314,6 @@ export default function GroupDetail() {
             assignedTo: t.assigned_to ? 'Nedodeljeno' : 'Nedodeljeno',
             assignedToId: t.assigned_to ?? '',
             completed: !!t.completed,
-            daysRemaining: t.days_remaining,
             recurring: !!t.recurring,
             originalDaysRemaining: t.original_days_remaining,
             deadline,
@@ -423,7 +326,7 @@ export default function GroupDetail() {
       }
     }
     
-    // Če je bilo preteklih opravil, ponovno naloži
+    // Če je bilo preteklih opravil, ponovno naloži podatke
     if (needsReload) {
       const { data: reloadedData } = await supabase
         .from('tasks')
@@ -431,12 +334,13 @@ export default function GroupDetail() {
         .eq('group_id', groupId)
       
       if (reloadedData) {
-        // NE kličemo loadMembers() tukaj, ker smo že posodobili lokalno stanje
-        // v adjustMemberOverdueCount in adjustMemberCompletedStars funkcijah
-        
-        // Nastavi data na osvežene podatke
-        Object.assign(data, reloadedData)
+        // Posodobi podatke
+        data.length = 0
+        data.push(...reloadedData)
       }
+      
+      // Ponovno naloži člane da dobimo posodobljene statistike
+      await loadMembers()
     }
     
     // DRUGO: Naloži imena profilov neposredno iz baze
@@ -457,22 +361,7 @@ export default function GroupDetail() {
       //izracun ur in preverjanje roka
       let hoursRemaining: number | undefined
       let isOverdue = false
-      let deadline = t.deadline
-      
-      // Če opravilo nima deadline, izračunaj ga glede na days_remaining
-      if (!deadline && t.created_at) {
-        const createdAt = new Date(t.created_at)
-        const deadlineDate = new Date(createdAt)
-        deadlineDate.setDate(deadlineDate.getDate() + (t.days_remaining || 0))
-        deadline = deadlineDate.toISOString()
-        
-        // Posodobi v bazi da ga ne računamo znova
-        supabase
-          .from('tasks')
-          .update({ deadline })
-          .eq('id', t.id)
-          .then(() => {})
-      }
+      const deadline = t.deadline
       
       if (deadline) {
         const now = new Date()
@@ -480,8 +369,10 @@ export default function GroupDetail() {
         const diff = deadlineDate.getTime() - now.getTime()
         hoursRemaining = Math.max(0, Math.floor(diff / (1000*60*60)))
         isOverdue = !t.completed && deadlineDate <= now
-        // Če je že poteklo, ga ne renderiramo (bo obdelano v checkAndHandleOverdueTasks)
-        if (isOverdue) return null
+        // Če je overdue in še ni obdelano, ga ne prikazuj (bo obdelano pri naslednjem refresh)
+        if (isOverdue && !processedOverdueTasks.has(t.id)) {
+          return null
+        }
       }
       
       return {
@@ -492,7 +383,6 @@ export default function GroupDetail() {
         assignedTo: t.assigned_to ? (idToName[t.assigned_to] ?? 'Nedodeljeno') : 'Nedodeljeno',
         assignedToId: t.assigned_to ?? '',
         completed: !!t.completed,
-        daysRemaining: t.days_remaining,
         recurring: !!t.recurring,
         originalDaysRemaining: t.original_days_remaining,
         deadline,
@@ -512,8 +402,7 @@ export default function GroupDetail() {
     
     setTasks(uniqueTasks)
     
-    // Preverj in obravnaj neopravljena opravila
-    await checkAndHandleOverdueTasks(mapped)
+    // ODSTRANIMO checkAndHandleOverdueTasks - že obdelano zgoraj
     
     setLoading(false)
   }
@@ -596,7 +485,12 @@ export default function GroupDetail() {
         })
 
       if (insertError) {
-        Alert.alert('Napaka', 'Napaka pri dodajanju člana')
+        // Preveri če je napaka zaradi duplicate key (unique constraint)
+        if (insertError.code === '23505') {
+          Alert.alert('Napaka', 'Ta uporabnik je že član skupine')
+        } else {
+          Alert.alert('Napaka', 'Napaka pri dodajanju člana')
+        }
         return
       }
 
@@ -759,10 +653,9 @@ export default function GroupDetail() {
       return
     }
     
-    // Izračunaj days_remaining od deadline-a
+    // Izračunaj original_days_remaining za ponavljajoča opravila
     const diffMs = deadline.getTime() - now.getTime()
-    const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
-    const originalDaysRemaining = daysRemaining > 0 ? daysRemaining : 1
+    const originalDaysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
 
     if (editingTaskId) {
       // Uredi obstoječe opravilo
@@ -770,7 +663,6 @@ export default function GroupDetail() {
         name: newTaskName.trim(),
         difficulty: newTaskDifficulty,
         assigned_to: selectedMemberId || null,
-        days_remaining: daysRemaining,
         original_days_remaining: originalDaysRemaining,
         recurring: newTaskRecurring,
         deadline: deadline.toISOString(),
@@ -786,7 +678,6 @@ export default function GroupDetail() {
                 difficulty: newTaskDifficulty,
                 assignedTo: selectedMember?.name || 'Nedodeljeno',
                 assignedToId: selectedMemberId,
-                daysRemaining: daysRemaining,
                 originalDaysRemaining: originalDaysRemaining,
                 recurring: newTaskRecurring,
               }
@@ -804,7 +695,6 @@ export default function GroupDetail() {
         created_by: currentUserId ?? null,
         assigned_to: selectedMemberId || null,
         completed: false,
-        days_remaining: daysRemaining,
         recurring: newTaskRecurring,
         original_days_remaining: originalDaysRemaining,
         deadline: deadline.toISOString(),
@@ -820,7 +710,6 @@ export default function GroupDetail() {
           assignedTo: selectedMember?.name || 'Nedodeljeno',
           assignedToId: selectedMemberId,
           completed: false,
-          daysRemaining: daysRemaining,
           recurring: newTaskRecurring,
           originalDaysRemaining: originalDaysRemaining
         }
@@ -873,12 +762,22 @@ export default function GroupDetail() {
         .from('tasks')
         .update({ completed: false })
         .eq('id', taskId)
-      // Odstrani iz processedOverdueTasks da se lahko spet obravnava kot overdue
-      setProcessedOverdueTasks(prev => {
-        const newSet = new Set(prev)
-        newSet.delete(taskId)
-        return newSet
-      })
+      
+      // Če ponovno postavimo na neopravljeno, uklonimo iz processedOverdueTasks
+      // samo če opravilo NI overdue (da se ne kaznuje ponovno)
+      if (task.deadline) {
+        const deadlineDate = new Date(task.deadline)
+        const now = new Date()
+        if (deadlineDate > now) {
+          // Opravilo še ni overdue, lahko ga odstranimo iz processed
+          setProcessedOverdueTasks(prev => {
+            const newSet = new Set(prev)
+            newSet.delete(taskId)
+            return newSet
+          })
+        }
+      }
+      
       await loadTasks()
     } else {
       // Označi kot opravljeno
@@ -888,23 +787,19 @@ export default function GroupDetail() {
         .update({ completed: true })
         .eq('id', taskId)
       
-      // Odstrani iz processedOverdueTasks ker je sedaj opravljeno
-      setProcessedOverdueTasks(prev => {
-        const newSet = new Set(prev)
-        newSet.delete(taskId)
-        return newSet
-      })
+      // NE odstranjujemo iz processedOverdueTasks - če je bilo overdue,
+      // naj ostane označeno da se ne kaznuje ponovno
 
       // Posodobi statistiko -_> ČAKAJ DA SE ZAKLJUČI
       //dodelimo zvezdice uoprabniku
       await adjustMemberCompletedCount(currentUserId, 1)
       await adjustMemberCompletedStars(currentUserId, task.difficulty || 0)
 
-      // Osveži seznam da se prikaže checkmark
-      await loadTasks()
-
-      // Če je ponavljajoče opravilo počakaj in resetiraj
+      // Če je ponavljajoče opravilo, NE naloži še enkrat - samo animiraj in resetiraj
       if (task.recurring) {
+        // Lokalno posodobi task da se prikaže kot completed z checkmark
+        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: true } : t))
+        
         setTimeout(async () => {
           if (!taskAnimations[taskId]) {
             taskAnimations[taskId] = new Animated.Value(1)
@@ -927,10 +822,20 @@ export default function GroupDetail() {
                 .from('tasks')
                 .update({ 
                   completed: false, 
-                  days_remaining: task.originalDaysRemaining,
                   deadline: newDeadline.toISOString()
                 })
                 .eq('id', taskId)
+              
+              // Pri resetu ponavljajočega opravila odstranimo iz processed
+              // da se lahko ponovno procesira če postane overdue
+              setProcessedOverdueTasks(prev => {
+                const newSet = new Set(prev)
+                newSet.delete(taskId)
+                return newSet
+              })
+              
+              // Počakaj malo da se baza posodobi, potem naloži
+              await new Promise(resolve => setTimeout(resolve, 100))
             } catch {}
 
             await loadTasks()
@@ -939,6 +844,9 @@ export default function GroupDetail() {
           }, 900)
         }, 1000) //Počakaj 1 sekundo da uporabnik vidi opravljeno opravilo
       } else {
+        //Neponavljajoče: osveži seznam da se prikaže checkmark
+        await loadTasks()
+        
         //Neponavljajoče: animiraj in izbriši
         setTimeout(async () => {
           if (!taskAnimations[taskId]) {

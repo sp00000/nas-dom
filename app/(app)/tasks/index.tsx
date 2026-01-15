@@ -13,11 +13,11 @@ interface Task {
   groupColor: string
   assignedTo: string
   completed: boolean
-  daysRemaining: number
   deadline?: string
   hoursRemaining?: number
   minutesRemaining?: number
   recurring: boolean
+  originalDaysRemaining?: number
   confirmationCount?: number
   confirmedByCurrentUser?: boolean
 }
@@ -152,10 +152,10 @@ export default function Tasks() {
           groupColor: '#4A90E2',
           assignedTo: userName,
           completed: !!t.completed,
-          daysRemaining: t.days_remaining,
           deadline: t.deadline,
           hoursRemaining,
           recurring: !!t.recurring,
+          originalDaysRemaining: t.original_days_remaining,
           confirmationCount: confirmedUsers.length,
           confirmedByCurrentUser: confirmedUsers.includes(currentUserId),
         }
@@ -244,13 +244,12 @@ export default function Tasks() {
             try {
               // Resetiraj opravilo
               const newDeadline = new Date()
-              newDeadline.setDate(newDeadline.getDate() + (task.daysRemaining || 7))
+              newDeadline.setDate(newDeadline.getDate() + (task.originalDaysRemaining || 7))
               
               await supabase
                 .from('tasks')
                 .update({ 
                   completed: false, 
-                  days_remaining: task.daysRemaining,
                   deadline: newDeadline.toISOString()
                 })
                 .eq('id', taskId)
@@ -305,23 +304,21 @@ export default function Tasks() {
     
     // Posodobi statistike za vse skupine
     for (const groupId of groupIds) {
-      const { data: currentStats } = await supabase
-        .from('group_member_stats')
+      const { data: currentMember } = await supabase
+        .from('group_members')
         .select('completed_stars')
         .eq('group_id', groupId)
         .eq('user_id', memberId)
         .single()
       
-      const currentStars = currentStats?.completed_stars ?? 0
+      const currentStars = currentMember?.completed_stars ?? 0
       const newStars = currentStars + delta
       
       await supabase
-        .from('group_member_stats')
-        .upsert({ 
-          group_id: groupId,
-          user_id: memberId,
-          completed_stars: newStars 
-        }, { onConflict: 'group_id,user_id' })
+        .from('group_members')
+        .update({ completed_stars: newStars })
+        .eq('group_id', groupId)
+        .eq('user_id', memberId)
     }
   }
 
