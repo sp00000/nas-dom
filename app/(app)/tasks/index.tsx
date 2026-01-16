@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons'
 import { router } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Animated, FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+import { ActivityIndicator, Alert, Animated, FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
 import { supabase } from '../../../src/lib/supabase'
 
 interface Task {
@@ -217,12 +217,62 @@ export default function Tasks() {
       await loadTasks()
     } else {
       //Označi kot opravljeno
-      await supabase
+      console.log('[toggleTaskCompletion] Starting task completion for task:', taskId)
+      
+      const { error: taskError } = await supabase
         .from('tasks')
         .update({ completed: true })
         .eq('id', taskId)
+      
+      if (taskError) {
+        console.error('[toggleTaskCompletion] CRITICAL - Error marking task complete:', JSON.stringify(taskError))
+        Alert.alert('Napaka', `Napaka pri posodobi naloge: ${taskError.message}`)
+        return
+      }
+      
+      console.log('[toggleTaskCompletion] Task marked as completed in database')
 
-      await adjustMemberCompletedStars(currentUserId, task.difficulty || 0)
+      // Posodobi statistiko za člana v tejle skupini
+      console.log('[toggleTaskCompletion] Fetching member stats for user:', currentUserId, 'group:', task.groupId)
+      
+      const { data: memberData, error: memberError } = await supabase
+        .from('group_members')
+        .select('id, completed_count, completed_stars')
+        .eq('group_id', task.groupId)
+        .eq('user_id', currentUserId)
+        .single()
+
+      if (memberError) {
+        console.error('[toggleTaskCompletion] CRITICAL - Error fetching member stats:', JSON.stringify(memberError))
+        Alert.alert('Napaka', `Napaka pri branju statistike: ${memberError.message}`)
+        return
+      }
+      
+      if (!memberData) {
+        console.error('[toggleTaskCompletion] No member data found')
+        Alert.alert('Napaka', 'Član ni bil najden v skupini')
+        return
+      }
+
+      console.log('[toggleTaskCompletion] Member found, updating stats:', memberData.id)
+
+      if (memberData) {
+        const { error: updateError } = await supabase
+          .from('group_members')
+          .update({
+            completed_count: (memberData.completed_count || 0) + 1,
+            completed_stars: (memberData.completed_stars || 0) + (task.difficulty || 0),
+          })
+          .eq('id', memberData.id)
+        
+        if (updateError) {
+          console.error('[toggleTaskCompletion] CRITICAL - Error updating member stats:', JSON.stringify(updateError))
+          Alert.alert('Napaka', `Napaka pri posodobi statistike: ${updateError.message}`)
+          return
+        }
+        
+        console.log('[toggleTaskCompletion] Successfully updated stats for member:', memberData.id)
+      }
 
       await loadTasks()//osvežimo seznam
 

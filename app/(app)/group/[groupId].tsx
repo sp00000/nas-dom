@@ -53,57 +53,97 @@ export default function GroupDetail() {
   const adjustMemberCompletedCount = async (memberId: string | undefined, delta: number) => {
     if (!memberId || !groupId) return
     
-    // Preberi trenutno vrednost iz baze
-    const { data: currentMember } = await supabase
-      .from('group_members')
-      .select('completed_count')
-      .eq('group_id', groupId as string)
-      .eq('user_id', memberId)
-      .single()
-    
-    const currentCount = currentMember?.completed_count ?? 0
-    const newCount = Math.max(0, currentCount + delta)
-    
-    // Posodobi v bazi
-    await supabase
-      .from('group_members')
-      .update({ completed_count: newCount })
-      .eq('group_id', groupId as string)
-      .eq('user_id', memberId)
-    
-    // Posodobi lokalno stanje
-    setMembers(prev => prev.map(m => m.id === memberId
-      ? { ...m, completedCount: newCount }
-      : m
-    ))
+    try {
+      console.log(`[adjustMemberCompletedCount] Updating ${memberId} in group ${groupId} by ${delta}`)
+      
+      // Preberi trenutno vrednost iz baze
+      const { data: currentMember, error: selectError } = await supabase
+        .from('group_members')
+        .select('completed_count')
+        .eq('group_id', groupId as string)
+        .eq('user_id', memberId)
+        .single()
+      
+      if (selectError) {
+        console.error(`[adjustMemberCompletedCount] SELECT error:`, JSON.stringify(selectError))
+        Alert.alert('Napaka pri branju', selectError.message)
+        return
+      }
+      
+      const currentCount = currentMember?.completed_count ?? 0
+      const newCount = Math.max(0, currentCount + delta)
+      console.log(`[adjustMemberCompletedCount] Current: ${currentCount}, New: ${newCount}`)
+      
+      // Posodobi v bazi
+      const { error: updateError } = await supabase
+        .from('group_members')
+        .update({ completed_count: newCount })
+        .eq('group_id', groupId as string)
+        .eq('user_id', memberId)
+      
+      if (updateError) {
+        console.error(`[adjustMemberCompletedCount] UPDATE error:`, JSON.stringify(updateError))
+        Alert.alert('Napaka pri posodobi', updateError.message)
+        return
+      }
+      
+      console.log(`[adjustMemberCompletedCount] Successfully updated to ${newCount}`)
+      
+      // Posodobi lokalno stanje
+      setMembers(prev => prev.map(m => m.id === memberId
+        ? { ...m, completedCount: newCount }
+        : m
+      ))
+    } catch (err) {
+      console.error(`[adjustMemberCompletedCount] Exception:`, err)
+    }
   }
 
   const adjustMemberCompletedStars = async (memberId: string | undefined, delta: number) => {
     if (!memberId || !groupId) return
     
-    // Preberi trenutno vrednost iz baze
-    const { data: currentMember } = await supabase
-      .from('group_members')
-      .select('completed_stars')
-      .eq('group_id', groupId as string)
-      .eq('user_id', memberId)
-      .single()
-    
-    const currentStars = currentMember?.completed_stars ?? 0
-    const newStars = currentStars + delta
-    
-    // Posodobi v bazi
-    await supabase
-      .from('group_members')
-      .update({ completed_stars: newStars })
-      .eq('group_id', groupId as string)
-      .eq('user_id', memberId)
-    
-    // Posodobi lokalno stanje
-    setMembers(prev => prev.map(m => m.id === memberId
-      ? { ...m, completedStars: newStars }
-      : m
-    ))
+    try {
+      console.log(`[adjustMemberCompletedStars] Updating ${memberId} in group ${groupId} by ${delta}`)
+      
+      // Preberi trenutno vrednost iz baze
+      const { data: currentMember, error: selectError } = await supabase
+        .from('group_members')
+        .select('completed_stars')
+        .eq('group_id', groupId as string)
+        .eq('user_id', memberId)
+        .single()
+      
+      if (selectError) {
+        console.error(`[adjustMemberCompletedStars] SELECT error:`, selectError)
+        return
+      }
+      
+      const currentStars = currentMember?.completed_stars ?? 0
+      const newStars = currentStars + delta
+      console.log(`[adjustMemberCompletedStars] Current: ${currentStars}, New: ${newStars}`)
+      
+      // Posodobi v bazi
+      const { error: updateError } = await supabase
+        .from('group_members')
+        .update({ completed_stars: newStars })
+        .eq('group_id', groupId as string)
+        .eq('user_id', memberId)
+      
+      if (updateError) {
+        console.error(`[adjustMemberCompletedStars] UPDATE error:`, updateError)
+        return
+      }
+      
+      console.log(`[adjustMemberCompletedStars] Successfully updated to ${newStars}`)
+      
+      // Posodobi lokalno stanje
+      setMembers(prev => prev.map(m => m.id === memberId
+        ? { ...m, completedStars: newStars }
+        : m
+      ))
+    } catch (err) {
+      console.error(`[adjustMemberCompletedStars] Exception:`, err)
+    }
   }
 
   const adjustMemberOverdueCount = async (memberId: string | undefined, delta: number) => {
@@ -143,6 +183,7 @@ export default function GroupDetail() {
   const [processedOverdueTasks, setProcessedOverdueTasks] = useState<Set<string>>(new Set())
   const [newTaskDeadlineDate, setNewTaskDeadlineDate] = useState<string>('')
   const [newTaskDeadlineTime, setNewTaskDeadlineTime] = useState<string>('')
+  const [isSubmittingTask, setIsSubmittingTask] = useState(false)
 
   useEffect(() => {
     (async () => {
@@ -481,15 +522,21 @@ export default function GroupDetail() {
         .from('group_members')
         .insert({
           group_id: groupId,
-          user_id: profileData.id
+          user_id: profileData.id,
+          completed_count: 0,
+          completed_stars: 0,
+          overdue_count: 0
         })
 
       if (insertError) {
+        // Log the actual error to console for debugging
+        console.error('Insert error:', insertError)
+        
         // Preveri če je napaka zaradi duplicate key (unique constraint)
         if (insertError.code === '23505') {
           Alert.alert('Napaka', 'Ta uporabnik je že član skupine')
         } else {
-          Alert.alert('Napaka', 'Napaka pri dodajanju člana')
+          Alert.alert('Napaka', `Napaka pri dodajanju člana: ${insertError.message}`)
         }
         return
       }
@@ -597,6 +644,9 @@ export default function GroupDetail() {
   }
 
   const handleAddTask = async () => {
+    // Prepreči multiple submissions
+    if (isSubmittingTask) return
+    
     if (!newTaskName.trim()) {
       Alert.alert('Napaka', 'Prosim vnesite ime opravila')
       return
@@ -653,81 +703,89 @@ export default function GroupDetail() {
       return
     }
     
-    // Izračunaj original_days_remaining za ponavljajoča opravila
-    const diffMs = deadline.getTime() - now.getTime()
-    const originalDaysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
+    // Označi da je submission v teku
+    setIsSubmittingTask(true)
+    
+    try {
+      // Izračunaj original_days_remaining za ponavljajoča opravila
+      const diffMs = deadline.getTime() - now.getTime()
+      const originalDaysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
 
-    if (editingTaskId) {
-      // Uredi obstoječe opravilo
-      const updatePayload: any = {
-        name: newTaskName.trim(),
-        difficulty: newTaskDifficulty,
-        assigned_to: selectedMemberId || null,
-        original_days_remaining: originalDaysRemaining,
-        recurring: newTaskRecurring,
-        deadline: deadline.toISOString(),
-      }
-      const { error } = await supabase.from('tasks').update(updatePayload).eq('id', editingTaskId)
-      if (error) {
-        // Fallback to local update
-        setTasks(tasks.map(task => 
-          task.id === editingTaskId
-            ? {
-                ...task,
-                name: newTaskName.trim(),
-                difficulty: newTaskDifficulty,
-                assignedTo: selectedMember?.name || 'Nedodeljeno',
-                assignedToId: selectedMemberId,
-                originalDaysRemaining: originalDaysRemaining,
-                recurring: newTaskRecurring,
-              }
-            : task
-        ))
-      } else {
-        await loadTasks()
-      }
-    } else {
-      // Ustvari novo opravilo
-      const insertPayload: any = {
-        group_id: groupId,
-        name: newTaskName.trim(),
-        difficulty: newTaskDifficulty,
-        created_by: currentUserId ?? null,
-        assigned_to: selectedMemberId || null,
-        completed: false,
-        recurring: newTaskRecurring,
-        original_days_remaining: originalDaysRemaining,
-        deadline: deadline.toISOString(),
-      }
-      const { data, error } = await supabase.from('tasks').insert(insertPayload).select().single()
-      if (error || !data) {
-        // Fallback to local add
-        const newTask: Task = {
-          id: Date.now().toString(),
+      if (editingTaskId) {
+        // Uredi obstoječe opravilo
+        const updatePayload: any = {
           name: newTaskName.trim(),
           difficulty: newTaskDifficulty,
-          createdBy: 'Jaz',
-          assignedTo: selectedMember?.name || 'Nedodeljeno',
-          assignedToId: selectedMemberId,
+          assigned_to: selectedMemberId || null,
+          original_days_remaining: originalDaysRemaining,
+          recurring: newTaskRecurring,
+          deadline: deadline.toISOString(),
+        }
+        const { error } = await supabase.from('tasks').update(updatePayload).eq('id', editingTaskId)
+        if (error) {
+          // Fallback to local update
+          setTasks(tasks.map(task => 
+            task.id === editingTaskId
+              ? {
+                  ...task,
+                  name: newTaskName.trim(),
+                  difficulty: newTaskDifficulty,
+                  assignedTo: selectedMember?.name || 'Nedodeljeno',
+                  assignedToId: selectedMemberId,
+                  originalDaysRemaining: originalDaysRemaining,
+                  recurring: newTaskRecurring,
+                }
+              : task
+          ))
+        } else {
+          await loadTasks()
+        }
+      } else {
+        // Ustvari novo opravilo
+        const insertPayload: any = {
+          group_id: groupId,
+          name: newTaskName.trim(),
+          difficulty: newTaskDifficulty,
+          created_by: currentUserId ?? null,
+          assigned_to: selectedMemberId || null,
           completed: false,
           recurring: newTaskRecurring,
-          originalDaysRemaining: originalDaysRemaining
+          original_days_remaining: originalDaysRemaining,
+          deadline: deadline.toISOString(),
         }
-        setTasks([...tasks, newTask])
-      } else {
-        await loadTasks()
+        const { data, error } = await supabase.from('tasks').insert(insertPayload).select().single()
+        if (error || !data) {
+          // Fallback to local add
+          const newTask: Task = {
+            id: Date.now().toString(),
+            name: newTaskName.trim(),
+            difficulty: newTaskDifficulty,
+            createdBy: 'Jaz',
+            assignedTo: selectedMember?.name || 'Nedodeljeno',
+            assignedToId: selectedMemberId,
+            completed: false,
+            recurring: newTaskRecurring,
+            originalDaysRemaining: originalDaysRemaining
+          }
+          setTasks([...tasks, newTask])
+        } else {
+          await loadTasks()
+        }
       }
-    }
 
-    setNewTaskName('')
-    setNewTaskDifficulty(3)
-    setSelectedMemberId('')
-    setNewTaskDays('7')
-    setNewTaskRecurring(true)
-    setEditingTaskId(null)
-    setNewTaskDeadlineDate('')
-    setNewTaskDeadlineTime('')
-    setTaskModalVisible(false)
+      setNewTaskName('')
+      setNewTaskDifficulty(3)
+      setSelectedMemberId('')
+      setNewTaskDays('7')
+      setNewTaskRecurring(true)
+      setEditingTaskId(null)
+      setNewTaskDeadlineDate('')
+      setNewTaskDeadlineTime('')
+      setTaskModalVisible(false)
+    } finally {
+      // Vedno ponastavimo flag na koncu
+      setIsSubmittingTask(false)
+    }
   }
 
   const handleCloseTaskModal = () => {
@@ -782,18 +840,30 @@ export default function GroupDetail() {
     } else {
       // Označi kot opravljeno
       // Najprej posodobi bazo da je completed
-      await supabase
+      console.log(`[toggleTaskCompletion] Marking task ${taskId} as completed`)
+      
+      const { error: taskError } = await supabase
         .from('tasks')
         .update({ completed: true })
         .eq('id', taskId)
+      
+      if (taskError) {
+        console.error(`[toggleTaskCompletion] CRITICAL - Error marking task complete:`, JSON.stringify(taskError))
+        Alert.alert('Napaka pri posodobi naloge', taskError.message)
+        return
+      }
       
       // NE odstranjujemo iz processedOverdueTasks - če je bilo overdue,
       // naj ostane označeno da se ne kaznuje ponovno
 
       // Posodobi statistiko -_> ČAKAJ DA SE ZAKLJUČI
-      //dodelimo zvezdice uoprabniku
-      await adjustMemberCompletedCount(currentUserId, 1)
-      await adjustMemberCompletedStars(currentUserId, task.difficulty || 0)
+      // Dodelimo točke DODELJENEMU članu (ne trenutnemu uporabniku)
+      // Če opravilo ni dodeljeno, je nedodeljeno in ga lahko opravi kdorkoli
+      const memberIdToUpdate = task.assignedToId || currentUserId
+      console.log(`[toggleTaskCompletion] Updating stats for member ${memberIdToUpdate}, difficulty: ${task.difficulty}`)
+      
+      await adjustMemberCompletedCount(memberIdToUpdate, 1)
+      await adjustMemberCompletedStars(memberIdToUpdate, task.difficulty || 0)
 
       // Če je ponavljajoče opravilo, NE naloži še enkrat - samo animiraj in resetiraj
       if (task.recurring) {
@@ -1283,12 +1353,13 @@ export default function GroupDetail() {
 
                 <View style={styles.modalButtons}>
                   <TouchableOpacity
-                    style={styles.submitButton}
+                    style={[styles.submitButton, isSubmittingTask && { opacity: 0.6 }]}
                     onPress={handleAddTask}
                     activeOpacity={0.8}
+                    disabled={isSubmittingTask}
                   >
                     <Text style={styles.submitButtonText}>
-                      {editingTaskId ? 'Shrani spremembe' : 'Dodaj opravilo'}
+                      {isSubmittingTask ? 'Dodajam...' : (editingTaskId ? 'Shrani spremembe' : 'Dodaj opravilo')}
                     </Text>
                   </TouchableOpacity>
                   

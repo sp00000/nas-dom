@@ -150,7 +150,15 @@ export default function Groups() {
       setGroups([...groups, { id: data.id, name: data.name, description: data.description ?? '', memberCount: 1 }])
       // Dodaj lastnika kot člana skupine
       if (ownerId) {
-        try { await supabase.from('group_members').insert({ group_id: data.id, user_id: ownerId }) } catch {}
+        try { 
+          await supabase.from('group_members').insert({ 
+            group_id: data.id, 
+            user_id: ownerId,
+            completed_count: 0,
+            completed_stars: 0,
+            overdue_count: 0
+          }) 
+        } catch {}
       }
     }
     setNewGroupName('')
